@@ -1601,6 +1601,15 @@ class Hyperparameters:
     save_checkpoint: bool = False
     # bigram hash embedding
     bigram_vocab_size: int = 50304 * 5
+    # MuLoCo outer optimizer (Nesterov SGD wrapping inner optimizer)
+    outer_lr: float = float(os.environ.get("OUTER_LR", "0.5"))
+    outer_momentum: float = float(os.environ.get("OUTER_MOMENTUM", "0.5"))
+    sync_interval: int = int(os.environ.get("SYNC_INTERVAL", "5"))
+    use_outer_optimizer: bool = os.environ.get("USE_OUTER_OPTIMIZER", "1") == "1"
+    # wandb logging
+    wandb_project: str = os.environ.get("WANDB_PROJECT", "modded-nanogpt-muloco")
+    wandb_run_name: str = os.environ.get("WANDB_RUN_NAME", "")
+    use_wandb: bool = os.environ.get("USE_WANDB", "0") == "1"
 
 args = Hyperparameters()
 
@@ -1700,6 +1709,68 @@ def get_muon_momentum(step: int, muon_warmup_steps=300, muon_cooldown_steps=50, 
         momentum = momentum_max
     return momentum
 
+class NesterovOuterOptimizer:
+    """
+    MuLoCo-style outer Nesterov SGD optimizer that wraps the inner optimizer.
+
+    Every `sync_interval` inner steps, computes a pseudogradient
+    (snapshot - current_params) and applies an outer Nesterov SGD update.
+    This implements the outer loop from MuLoCo (Algorithm 1 with K=1).
+    """
+
+    def __init__(self, model_params, outer_lr=0.5, outer_momentum=0.5, sync_interval=5):
+        self.outer_lr = outer_lr
+        self.outer_momentum = outer_momentum
+        self.sync_interval = sync_interval
+        self.inner_step_count = 0
+        self.outer_step_count = 0
+
+        # Collect all trainable parameters
+        self._all_params = [p for p in model_params if p.requires_grad]
+
+        # Initialize snapshots and outer momentum buffers
+        self._param_snapshots = [p.data.clone() for p in self._all_params]
+        self._outer_momentum_buffers = [torch.zeros_like(p.data) for p in self._all_params]
+
+    def reset(self):
+        """Reset outer optimizer state (call after model state reload)."""
+        self._param_snapshots = [p.data.clone() for p in self._all_params]
+        self._outer_momentum_buffers = [torch.zeros_like(p.data) for p in self._all_params]
+        self.inner_step_count = 0
+        self.outer_step_count = 0
+
+    @torch.no_grad()
+    def maybe_outer_step(self):
+        """Called after each inner optimizer step. Applies outer correction every sync_interval steps."""
+        self.inner_step_count += 1
+
+        if self.inner_step_count >= self.sync_interval:
+            self._outer_step()
+            self.inner_step_count = 0
+
+    @torch.no_grad()
+    def _outer_step(self):
+        """Outer Nesterov SGD using pseudogradient = snapshot - current."""
+        self.outer_step_count += 1
+        for i, p in enumerate(self._all_params):
+            snapshot = self._param_snapshots[i]
+            u = self._outer_momentum_buffers[i]
+
+            # Pseudogradient: delta = theta_ref - theta_current
+            delta = snapshot - p.data
+
+            # Nesterov SGD outer update: u = mu * u + eta * delta
+            u.mul_(self.outer_momentum).add_(delta, alpha=self.outer_lr)
+
+            # theta = theta_ref - mu * u - eta * delta
+            p.data.copy_(snapshot)
+            p.data.add_(u, alpha=-self.outer_momentum)
+            p.data.add_(delta, alpha=-self.outer_lr)
+
+        # Save new snapshots
+        self._param_snapshots = [p.data.clone() for p in self._all_params]
+
+
 class TrainingManager():
     """
     Manages the NorMuonAndAdam for all parameters with explicit ordering.
@@ -1709,6 +1780,7 @@ class TrainingManager():
         4. Muon has a linear momentum warmup and cooldown schedule
         5. Learning rates follow a linear decay schedule
         6. Embed is tied to lm_head until split step (2/3 of training), then untied @classiclarryd
+        7. Optional outer Nesterov SGD optimizer (MuLoCo-style) for improved convergence
     """
     def __init__(self, model):
         self.model = model
@@ -1765,6 +1837,16 @@ class TrainingManager():
             adam_defaults=adam_defaults,
             normuon_defaults=normuon_defaults,
         )
+
+        # Optional outer Nesterov SGD optimizer (MuLoCo-style)
+        self.outer_optimizer = None
+        if args.use_outer_optimizer:
+            self.outer_optimizer = NesterovOuterOptimizer(
+                model.parameters(),
+                outer_lr=args.outer_lr,
+                outer_momentum=args.outer_momentum,
+                sync_interval=args.sync_interval,
+            )
 
         # Split embed from lm_head at 2/3 of training (on an odd step so Adam updates)
         self.split_step = training_schedule.split_step
@@ -1826,12 +1908,20 @@ class TrainingManager():
         if step == self.split_step:
             self.optimizer.copy_lm_state_to_embed()
 
+        # Apply outer Nesterov SGD correction (MuLoCo)
+        if self.outer_optimizer is not None:
+            self.outer_optimizer.maybe_outer_step()
+
     def reset(self, state=None):
         if state is not None:
             self.optimizer.load_state_dict(state)
 
         # Reset NorMuon momentum buffers and split_embed state
         self.optimizer.reset()
+
+        # Reset outer optimizer state
+        if self.outer_optimizer is not None:
+            self.outer_optimizer.reset()
 
         stage, _ = training_schedule.lookup(0)
         self.ws_short, self.ws_long = stage.window_sizes
@@ -1883,6 +1973,27 @@ class TrainingManager():
 # -----------------------------------------------------------------------------
 # int main
 
+# wandb initialization
+if master_process and args.use_wandb:
+    import wandb
+    wandb_name = args.wandb_run_name or f"olr{args.outer_lr}_omom{args.outer_momentum}_H{args.sync_interval}"
+    if not args.use_outer_optimizer:
+        wandb_name = "baseline_no_outer"
+    wandb.init(
+        project=args.wandb_project,
+        name=wandb_name,
+        config={
+            "use_outer_optimizer": args.use_outer_optimizer,
+            "outer_lr": args.outer_lr,
+            "outer_momentum": args.outer_momentum,
+            "sync_interval": args.sync_interval,
+            "num_scheduled_iterations": args.num_scheduled_iterations,
+            "num_extension_iterations": args.num_extension_iterations,
+            "world_size": world_size,
+            "grad_accum_steps": grad_accum_steps,
+        },
+    )
+
 # begin logging
 logfile = None
 if master_process:
@@ -1910,6 +2021,10 @@ def nvidia_smi():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
 print0(nvidia_smi())
 print0("="*100)
+if args.use_outer_optimizer:
+    print0(f"MuLoCo outer optimizer: outer_lr={args.outer_lr}, outer_momentum={args.outer_momentum}, sync_interval={args.sync_interval}", console=True)
+else:
+    print0("MuLoCo outer optimizer: DISABLED (baseline mode)", console=True)
 
 model: nn.Module = GPT(
     vocab_size=50257,
@@ -2006,6 +2121,8 @@ for step in range(train_steps + 1):
         del val_loader
         dist.reduce(val_loss, 0, op=dist.ReduceOp.AVG)
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        if master_process and args.use_wandb:
+            wandb.log({"val_loss": val_loss.item(), "train_time_ms": training_time_ms, "step": step})
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -2032,7 +2149,11 @@ for step in range(train_steps + 1):
     # logging
     approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
     print0(f"step:{step+1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms/(step + 1):.2f}ms", console=True)
+    if master_process and args.use_wandb and step % 10 == 0:
+        wandb.log({"train_time_ms": approx_training_time_ms, "step_avg_ms": approx_training_time_ms/(step + 1), "step": step})
 
 print0(f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
        f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB", console=True)
+if master_process and args.use_wandb:
+    wandb.finish()
 dist.destroy_process_group()
