@@ -31,7 +31,7 @@ mkdir -p logs
 run_config() {
     GPU=$1
     CONFIG=$2
-    IFS=',' read -r OLR OMOM H USE_OUTER <<< "$CONFIG"
+    IFS=':' read -r OLR OMOM H USE_OUTER <<< "$CONFIG"
     USE_OUTER=${USE_OUTER:-1}
     export CUDA_VISIBLE_DEVICES=$GPU
     export OUTER_LR=$OLR
@@ -47,14 +47,14 @@ run_config() {
     torchrun --standalone --nproc_per_node=1 --master_port=$((29500 + GPU)) train_gpt.py
 }
 
-CONFIG1=${CONFIG1:-"0.5,0.5,5,1"}
-CONFIG2=${CONFIG2:-"0.3,0.5,5,1"}
-CONFIG3=${CONFIG3:-"0.7,0.5,5,1"}
-CONFIG4=${CONFIG4:-"0.5,0.3,5,1"}
-CONFIG5=${CONFIG5:-"0.5,0.7,5,1"}
-CONFIG6=${CONFIG6:-"0.5,0.5,2,1"}
-CONFIG7=${CONFIG7:-"0.5,0.5,10,1"}
-CONFIG8=${CONFIG8:-"0,0,5,0"}
+CONFIG1=${CONFIG1:-"0.5:0.5:5:1"}
+CONFIG2=${CONFIG2:-"0.3:0.5:5:1"}
+CONFIG3=${CONFIG3:-"0.7:0.5:5:1"}
+CONFIG4=${CONFIG4:-"0.5:0.3:5:1"}
+CONFIG5=${CONFIG5:-"0.5:0.7:5:1"}
+CONFIG6=${CONFIG6:-"0.5:0.5:2:1"}
+CONFIG7=${CONFIG7:-"0.5:0.5:10:1"}
+CONFIG8=${CONFIG8:-"0:0:5:0"}
 
 echo "Running 8 configs in parallel on H200:"
 run_config 0 "$CONFIG1" &

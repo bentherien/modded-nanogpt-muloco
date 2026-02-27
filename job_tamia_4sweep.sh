@@ -33,7 +33,7 @@ mkdir -p logs
 run_config() {
     GPU=$1
     CONFIG=$2
-    IFS=',' read -r OLR OMOM H USE_OUTER <<< "$CONFIG"
+    IFS=':' read -r OLR OMOM H USE_OUTER <<< "$CONFIG"
     USE_OUTER=${USE_OUTER:-1}
     export CUDA_VISIBLE_DEVICES=$GPU
     export OUTER_LR=$OLR
@@ -50,10 +50,10 @@ run_config() {
 }
 
 # Default configs if not provided
-CONFIG1=${CONFIG1:-"0.5,0.5,5,1"}
-CONFIG2=${CONFIG2:-"0.3,0.5,5,1"}
-CONFIG3=${CONFIG3:-"0.7,0.5,5,1"}
-CONFIG4=${CONFIG4:-"0,0,5,0"}
+CONFIG1=${CONFIG1:-"0.5:0.5:5:1"}
+CONFIG2=${CONFIG2:-"0.3:0.5:5:1"}
+CONFIG3=${CONFIG3:-"0.7:0.5:5:1"}
+CONFIG4=${CONFIG4:-"0:0:5:0"}
 
 echo "Running 4 configs in parallel:"
 run_config 0 "$CONFIG1" &
