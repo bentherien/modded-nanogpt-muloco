@@ -1986,20 +1986,25 @@ if master_process and args.use_wandb:
     wandb_name = args.wandb_run_name or f"olr{args.outer_lr}_omom{args.outer_momentum}_H{args.sync_interval}"
     if not args.use_outer_optimizer:
         wandb_name = "baseline_no_outer"
-    wandb.init(
-        project=args.wandb_project,
-        name=wandb_name,
-        config={
-            "use_outer_optimizer": args.use_outer_optimizer,
-            "outer_lr": args.outer_lr,
-            "outer_momentum": args.outer_momentum,
-            "sync_interval": args.sync_interval,
-            "num_scheduled_iterations": args.num_scheduled_iterations,
-            "num_extension_iterations": args.num_extension_iterations,
-            "world_size": world_size,
-            "grad_accum_steps": grad_accum_steps,
-        },
-    )
+    try:
+        wandb.init(
+            project=args.wandb_project,
+            name=wandb_name,
+            settings=wandb.Settings(init_timeout=120),
+            config={
+                "use_outer_optimizer": args.use_outer_optimizer,
+                "outer_lr": args.outer_lr,
+                "outer_momentum": args.outer_momentum,
+                "sync_interval": args.sync_interval,
+                "num_scheduled_iterations": args.num_scheduled_iterations,
+                "num_extension_iterations": args.num_extension_iterations,
+                "world_size": world_size,
+                "grad_accum_steps": grad_accum_steps,
+            },
+        )
+    except Exception as e:
+        print0(f"WARNING: wandb init failed: {e}. Training will continue without wandb.", console=True)
+        args.use_wandb = False
 
 # begin logging
 logfile = None
