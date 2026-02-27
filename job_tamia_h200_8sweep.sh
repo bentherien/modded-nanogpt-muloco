@@ -18,7 +18,7 @@ source ~/scratch/modded-nanogpt-muloco/venv/bin/activate
 export http_proxy=http://proxy.tamia.alliancecan.ca:3128
 export https_proxy=http://proxy.tamia.alliancecan.ca:3128
 export WANDB_API_KEY=9fa3792d90a05640029b7725e310b9904ac00119
-export USE_WANDB=1
+export USE_WANDB=0
 export WANDB_PROJECT=modded-nanogpt-muloco
 export DATA_PATH=~/scratch/modded-nanogpt-muloco
 export TIKTOKEN_CACHE_DIR=~/scratch/modded-nanogpt-muloco/tiktoken_cache
