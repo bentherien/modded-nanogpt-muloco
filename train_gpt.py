@@ -2003,7 +2003,7 @@ if master_process and args.use_wandb:
             },
         )
     except Exception as e:
-        print0(f"WARNING: wandb init failed: {e}. Training will continue without wandb.", console=True)
+        print(f"WARNING: wandb init failed: {e}. Training will continue without wandb.")
         args.use_wandb = False
 
 # begin logging
