@@ -32,6 +32,13 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 # torch._inductor.config.coordinate_descent_tuning = True # we have banned this flag for new records because it causes compilation to take 30min
+
+# Patch CUDA version for kernels compatibility: ComputeCanada torch reports CUDA 12.9
+# but flash-attention-3 HuggingFace repo only has builds for cu126/cu128/cu130.
+# CUDA 12.8 builds are forward-compatible with 12.9 runtime.
+if torch.version.cuda and torch.version.cuda == "12.9":
+    torch.version.cuda = "12.8"
+
 from kernels import get_kernel
 from torch import Tensor, nn
 
