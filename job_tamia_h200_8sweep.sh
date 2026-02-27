@@ -23,6 +23,7 @@ export WANDB_PROJECT=modded-nanogpt-muloco
 export DATA_PATH=~/scratch/modded-nanogpt-muloco
 export TIKTOKEN_CACHE_DIR=~/scratch/modded-nanogpt-muloco/tiktoken_cache
 export HF_DATASETS_OFFLINE=1
+export HF_HUB_OFFLINE=1
 
 cd ~/scratch/modded-nanogpt-muloco
 mkdir -p logs
